@@ -1,0 +1,12 @@
+# secrets
+client_secret*.json
+token*.json
+.env
+secrets/
+# python
+.venv/
+__pycache__/
+# later chapters
+.terraform/
+*.tfstate*
+kubeconfig*
