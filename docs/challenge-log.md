@@ -122,3 +122,17 @@ tokens, so the job and its token storage are the most valuable target.
 - Account B: Google blocked creation. Retry, or use a low-risk fallback (B only gets `drive.file`).
 - Google "Testing" mode refresh tokens expire after 7 days. Does that affect the 2–3 day EKS run?
 - Does kind's network plugin actually enforce NetworkPolicy? (Test in Ch 3.)
+
+### 2026-11-13 · Chapter 1 · OAuth library uses PKCE and state
+
+- **Question:** Does google-auth-oauthlib's InstalledAppFlow use PKCE and
+  state, or do I have to add them?
+- **How I checked:** Read the authorization URL the script printed when I ran
+  `python -m src.authorize --account dest`.
+- **What I found:** The URL includes `state=<random value>` (CSRF protection
+  on the callback) and `code_challenge=…&code_challenge_method=S256` (PKCE,
+  so an intercepted authorization code can't be redeemed by someone else).
+- **What I learned:** Verify a library's security behaviour from evidence,
+  not assumptions. Here the library handles both by default.
+- **Story potential:** yes. "I verified PKCE and state in the actual
+  authorization request rather than assuming the library did it."
