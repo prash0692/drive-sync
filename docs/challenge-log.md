@@ -136,3 +136,12 @@ tokens, so the job and its token storage are the most valuable target.
   not assumptions. Here the library handles both by default.
 - **Story potential:** yes. "I verified PKCE and state in the actual
   authorization request rather than assuming the library did it."
+
+   ### 2026-11-14 · Chapter 1 · Account-mismatch guard tested
+   - **Control:** sync.py checks each token's email (from Google) against
+     the expected accounts in .env and stops before any file is touched.
+   - **Test:** set EXPECTED_SOURCE_EMAIL to the wrong account → STOP message,
+     non-zero exit code. Correct settings → "Tokens OK".
+   - **Why it matters:** Google enforces what a token can do, not which
+     account I meant. Only my code knows the intent.
+   - **Story potential:** yes. "I tested the control by breaking it."
