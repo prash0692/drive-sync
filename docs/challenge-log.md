@@ -145,3 +145,14 @@ tokens, so the job and its token storage are the most valuable target.
    - **Why it matters:** Google enforces what a token can do, not which
      account I meant. Only my code knows the intent.
    - **Story potential:** yes. "I tested the control by breaking it."
+
+      ### 2026-11-17 · Chapter 1 · F3 test caught a silent duplicate bug
+   - **What happened:** the second run copied every file again.
+   - **Cause:** the tag key written on upload didn't match the key
+     searched for in find_copy, so no copy was ever "found". No error,
+     just duplicates.
+   - **Fix:** made both use source_file_id; cleared Drive B; reran.
+   - **Result:** run 1 COPIED ×4, run 2 ALREADY COPIED ×4 (F1, F3 pass).
+   - **Lesson:** "it ran without errors" isn't a test. Test the
+     behaviour (run twice, check for duplicates).
+   - **Story potential:** yes

@@ -15,11 +15,13 @@ A: They never call each other. They're connected only through the token
 
 import os
 import sys
+import io
 import re
 from pathlib import Path
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 SECRETS_DIR = Path.home() / ".drive-sync"
 
@@ -72,6 +74,62 @@ def list_source_files(drive, folder_id):
         if not page_token:
             return files
 
+FOLDER_MIME = "application/vnd.google-apps.folder"
+
+
+# Find the app's own folder in Drive B, or create it the first time.
+# drive.file means the app can only see folders it created, so it makes its own.
+def get_dest_folder(drive):
+    response = drive.files().list(    # search Drive B for a folder with tag role=drive-sync-root
+        q="mimeType = 'application/vnd.google-apps.folder' and "
+          "appProperties has { key='role' and value='drive-sync-root' } and trashed = false",
+        fields="files(id)",           # in the reply, only include each folder's ID
+    ).execute()
+    found = response.get("files", [])  # list of matching folders; [] if none (no crash)
+    if found:
+        return found[0]["id"]          # folder exists: return its ID and stop here
+    # no folder found: carry on and create one
+    folder = drive.files().create(     # create the folder and tag it role=drive-sync-root
+        body={"name": "drive-sync copies", "mimeType": FOLDER_MIME,
+              "appProperties": {"role": "drive-sync-root"}},
+        fields="id",                   # in the reply, only include the new folder's ID
+    ).execute()
+    print("Created destination folder in Drive B")
+    return folder["id"]                # return the new folder's ID
+
+
+# Look in Drive B for a copy tagged with this source file's ID (None if not copied yet)
+def find_copy(drive, source_file_id):
+    response = drive.files().list(
+        q="appProperties has { key='source_file_id' and value='" + source_file_id + "' } and trashed = false",
+        fields="files(id, appProperties)",
+    ).execute()
+    found = response.get("files", [])
+    return found[0] if found else None      
+
+
+# Download a file's contents into memory (never to disk)
+def download(drive, file_id):
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, drive.files().get_media(fileId=file_id))
+    done = False
+    while not done:   # keep going until the file is complete
+        _, done = downloader.next_chunk()  # get the next piece; done = True when finished
+    return buffer.getvalue()
+
+
+# Upload the bytes to Drive B as a new file, tagged with the source file's ID and checksum
+def upload_copy(drive, f, data, dest_folder_id):
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=f["mimeType"])
+    drive.files().create(
+        body={
+            "name": f["name"],
+            "parents": [dest_folder_id],
+            "appProperties": {"source_file_id": f["id"], "source_md5": f.get("md5Checksum", "")},
+        },
+        media_body=media,
+        fields="id",
+    ).execute()
 
 if __name__ == "__main__":
     config = load_config()
@@ -90,5 +148,23 @@ if __name__ == "__main__":
 
     files = list_source_files(source, config["source_folder_id"])
     print(f"Found {len(files)} files in the source folder:")
+
+    dest_folder_id = get_dest_folder(dest) 
+
     for f in files:
-        print(" -", f["name"], "|", f["mimeType"], "|", f.get("size"), "bytes")
+        if not ID_PATTERN.match(f["id"]):
+            print("SKIPPED (unexpected ID format):", f["name"])
+            continue
+        if f["mimeType"].startswith("application/vnd.google-apps."):
+            print("SKIPPED (Google-native type):", f["name"])
+            continue
+        if find_copy(dest, f["id"]):
+            print("ALREADY COPIED:", f["name"])
+            continue
+
+        data = download(source, f["id"])            # token A: read from Drive A
+        upload_copy(dest, f, data, dest_folder_id)  # token B: write to Drive B
+        print("COPIED:", f["name"])
+
+
+    
