@@ -17,14 +17,27 @@ import os
 import sys
 import io
 import re
-from pathlib import Path
+import json
 
+from datetime import datetime, timezone
+from pathlib import Path
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 SECRETS_DIR = Path.home() / ".drive-sync"
 
+# Write one log line as JSON: time, file name, outcome (and a reason if there is one).
+# json.dumps escapes line breaks and quotes, so a file name can't fake extra log lines.
+def log(outcome, name, reason=""):
+    record = {
+        "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "file": name,
+        "outcome": outcome,
+    }
+    if reason:
+        record["reason"] = reason
+    print(json.dumps(record), flush=True)
 
 # Read settings from environment variables; stop if any are missing
 def load_config():
@@ -131,6 +144,17 @@ def upload_copy(drive, f, data, dest_folder_id):
         fields="id",
     ).execute()
 
+# Replace an existing copy's contents with the new version, and update its fingerprint tag
+def update_copy(drive, copy_id, f, data):
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=f["mimeType"])
+    drive.files().update(
+        fileId=copy_id,
+        body={"name": f["name"],
+              "appProperties": {"source_md5": f.get("md5Checksum", "")}},
+        media_body=media,
+        fields="id",
+    ).execute()
+
 if __name__ == "__main__":
     config = load_config()
     source = connect("source")
@@ -153,18 +177,21 @@ if __name__ == "__main__":
 
     for f in files:
         if not ID_PATTERN.match(f["id"]):
-            print("SKIPPED (unexpected ID format):", f["name"])
+            log("skipped", f["name"], "unexpected ID format")
             continue
         if f["mimeType"].startswith("application/vnd.google-apps."):
-            print("SKIPPED (Google-native type):", f["name"])
-            continue
-        if find_copy(dest, f["id"]):
-            print("ALREADY COPIED:", f["name"])
+           log("skipped", f["name"], "Google-native type")
+           continue
+
+        existing = find_copy(dest, f["id"])
+        if existing and existing["appProperties"].get("source_md5") == f.get("md5Checksum", ""):
+            log("unchanged", f["name"])
             continue
 
         data = download(source, f["id"])            # token A: read from Drive A
-        upload_copy(dest, f, data, dest_folder_id)  # token B: write to Drive B
-        print("COPIED:", f["name"])
-
-
-    
+        if existing:
+            update_copy(dest, existing["id"], f, data)
+            log("updated", f["name"])
+        else:
+            upload_copy(dest, f, data, dest_folder_id)
+            log("copied", f["name"])
