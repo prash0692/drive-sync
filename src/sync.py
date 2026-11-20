@@ -24,6 +24,8 @@ from pathlib import Path
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from google.auth.exceptions import RefreshError #for catching expired or revoked tokens
+from googleapiclient.errors import HttpError #for catching API errors like 403
 
 SECRETS_DIR = Path.home() / ".drive-sync"
 
@@ -161,8 +163,18 @@ if __name__ == "__main__":
     dest = connect("dest")
 
     # Mismatch guard: refuse to run if a token belongs to the wrong account
-    source_email = who_am_i(source)
-    dest_email = who_am_i(dest)
+    # try block is to catch errors from the Drive API, like a 403 if the token is revoked or expired. The script will log the error and exit, rather than crashing.
+    try:
+        source_email = who_am_i(source)
+    except RefreshError:
+        log("auth_failed", "source account", "token expired or revoked: rerun authorize.py --account source")
+        sys.exit(1)
+    try:
+        dest_email = who_am_i(dest)
+    except RefreshError:
+        log("auth_failed", "dest account", "token expired or revoked: rerun authorize.py --account dest")
+        sys.exit(1)
+
     if source_email.lower() != config["expected_source"].lower():
         sys.exit(f"STOP: source token is for {source_email}, expected {config['expected_source']}")
     if dest_email.lower() != config["expected_dest"].lower():
@@ -174,19 +186,36 @@ if __name__ == "__main__":
     print(f"Found {len(files)} files in the source folder:")
 
     dest_folder_id = get_dest_folder(dest) 
-
+    failed = 0 #count of files that failed to copy, so we can exit with an error code if any failed
     for f in files:
         if not ID_PATTERN.match(f["id"]):
             log("skipped", f["name"], "unexpected ID format")
             continue
         if f["mimeType"].startswith("application/vnd.google-apps."):
-           log("skipped", f["name"], "Google-native type")
-           continue
-
-        existing = find_copy(dest, f["id"])
-        if existing and existing["appProperties"].get("source_md5") == f.get("md5Checksum", ""):
-            log("unchanged", f["name"])
+            log("skipped", f["name"], "Google-native type")
             continue
+#this try block is to catch errors from the Drive API, like a 403 if the token is revoked or expired. The script will log the error and continue with the next file, rather than crashing.
+        try:
+            existing = find_copy(dest, f["id"])
+            if existing and existing["appProperties"].get("source_md5") == f.get("md5Checksum", ""):
+                log("unchanged", f["name"])
+                continue
+
+            data = download(source, f["id"])
+            if existing:
+                update_copy(dest, existing["id"], f, data)
+                log("updated", f["name"])
+            else:
+                upload_copy(dest, f, data, dest_folder_id)
+                log("copied", f["name"])
+        except (HttpError, RefreshError) as e:
+            status = getattr(getattr(e, "resp", None), "status", "auth")
+            log("failed", f["name"], f"Drive error: {status}")
+            failed += 1
+
+    if failed:
+        sys.exit(1)
+
 
         data = download(source, f["id"])            # token A: read from Drive A
         if existing:

@@ -156,3 +156,61 @@ tokens, so the job and its token storage are the most valuable target.
    - **Lesson:** "it ran without errors" isn't a test. Test the
      behaviour (run twice, check for duplicates).
    - **Story potential:** yes
+
+   ### 2026-11-20 · Chapter 2 · Hardening the container image
+
+- **Goal:** take a naive first image, scan it, harden it, scan again (S2, S3).
+
+- **Before (v1: `FROM python:3.12`, `COPY . .`, runs as root):**
+  - 2.09 GB on disk
+  - 528 high/critical CVEs (527 OS, 1 Python: setuptools from the base image), 16 critical
+  - Running as root (Trivy DS-0002, HIGH)
+  - `.env`, `.git` and `.venv` baked into the image: no `.dockerignore`, and
+    Docker doesn't read `.gitignore`
+  - Tokens were NOT in the image: they live in `~/.drive-sync`, outside the
+    repo folder, so they were never in the build context
+
+- **What I changed:**
+  - `python:3.12-slim`, pinned by `@sha256` digest
+  - `.dockerignore` (`.git`, `.venv`, `.env*`, `**/__pycache__`, docs…)
+  - Explicit copy: only `requirements.txt`, `src/__init__.py`, `src/sync.py`
+    (allowlist, not denylist)
+  - `pip install --no-cache-dir`
+  - Unprivileged `appuser` (UID 10001); app files stay root-owned and read-only
+  - Tokens mounted read-only at run time, never copied into the image
+
+- **After (v2):**
+  - 398 MB (−81%)
+  - 48 high, 0 critical (−91%), all in the Debian base OS; 0 in my Python
+    dependencies
+  - Only 1 of the 48 has an upstream fix; the rest are accepted until fixes
+    ship, with rescans and base-digest updates
+  - `whoami` → appuser; `/app` holds only the three files the job needs
+  - Sync still runs end to end (regression check after each change)
+
+- **Triage notes:**
+  - Most v1 findings were packages the job never uses (MariaDB, OpenSSH, wget,
+    Perl, X11, build headers). The fix was removing them, not patching them
+  - `linux-libc-dev` kernel CVEs are mostly noise in a container: it uses the
+    host's kernel
+  - DS-0026 (no HEALTHCHECK, LOW): accepted, not applicable to a batch job
+  - Scoped `trivy config` with `--skip-dirs .venv`: the unscoped scan reported
+    hundreds of .venv JSON files as CloudFormation, all noise
+
+- **What broke / surprised me:**
+  - Digest pasted as `sha256:sha256:…` → "invalid reference format"
+  - First tidy attempt (`authorize.py/` in .dockerignore) didn't match
+    `src/authorize.py`; fixed with an explicit COPY list
+  - The destination token expired 7 days after consent (Testing-mode OAuth);
+    the container failed closed with one `auth_failed` log line. Re-authorized
+    on my Mac
+
+- **What I learned:**
+  - Docker ignores `.gitignore`; only `.dockerignore` and what you COPY count
+  - Layers are permanent: rebuilding doesn't un-leak a secret in a pushed image
+  - The scanner flagged root but not `.env` in the image; I found that by
+    inspecting the image myself
+
+- **Story potential:** yes. "2.09 GB and 528 high/critical CVEs → 398 MB and
+  48, zero in my own dependencies, only one fixable, non-root, nothing in the
+  image but the code."
